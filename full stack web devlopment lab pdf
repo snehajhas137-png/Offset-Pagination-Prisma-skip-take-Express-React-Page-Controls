@@ -1,0 +1,296 @@
+Here is the complete implementation for all four tasks of the **Podly** application, followed by exact zip packaging instructions.
+
+---
+
+### Task 1 & Task 2 & Task 3 — Backend Implementation
+
+**File:** `server/routes/episodes.js` (or `server/server.js` if routes are handled inline)
+
+```javascript
+const express = require('express');
+const router = express.Router();
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+// GET /api/episodes
+router.get('/', async (req, res, next) => {
+  try {
+    const { search, page = 1 } = req.query;
+    const pageNum = parseInt(page, 10) || 1;
+    const pageSize = 8;
+    const skip = (pageNum - 1) * pageSize;
+
+    // Task 2: Case-insensitive search filter on title
+    const where = {};
+    if (search && search.trim() !== '') {
+      where.title = {
+        contains: search.trim(),
+        mode: 'insensitive',
+      };
+    }
+
+    // Task 3: Total count of matching records for pagination meta
+    const total = await prisma.episode.count({ where });
+
+    // Task 1 & 3: Nested include and offset pagination query
+    const episodes = await prisma.episode.findMany({
+      where,
+      skip,
+      take: pageSize,
+      include: {
+        podcast: {
+          select: {
+            name: true,
+            coverUrl: true,
+          },
+        },
+        _count: {
+          select: {
+            comments: true,
+          },
+        },
+      },
+      orderBy: {
+        publishedAt: 'desc',
+      },
+    });
+
+    const hasMore = skip + episodes.length < total;
+
+    // Task 3: Required response envelope
+    res.json({
+      episodes,
+      total,
+      hasMore,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+module.exports = router;
+
+```
+
+---
+
+### Task 2 & Task 3 — Frontend API Service
+
+**File:** `client/src/services/episodes.service.js`
+
+```javascript
+import axios from 'axios';
+
+const API_URL = 'http://localhost:3001/api';
+
+export const fetchEpisodes = async ({ search = '', page = 1 } = {}) => {
+  const response = await axios.get(`${API_URL}/episodes`, {
+    params: {
+      search: search.trim() || undefined,
+      page,
+    },
+  });
+  return response.data;
+};
+
+```
+
+---
+
+### Task 1 — Episode Component with Fallbacks
+
+**File:** `client/src/components/EpisodeItem.jsx`
+
+```jsx
+import React from 'react';
+
+export default function EpisodeItem({ episode }) {
+  // Task 1: Render nested podcast name, cover image, and comment count with fallbacks
+  const podcastName = episode?.podcast?.name || 'Unknown podcast';
+  const coverUrl = episode?.podcast?.coverUrl || '/placeholder-cover.png';
+  const commentCount = episode?._count?.comments ?? 0;
+
+  return (
+    <div className="episode-item">
+      <img 
+        src={coverUrl} 
+        alt={podcastName} 
+        className="podcast-cover" 
+        onError={(e) => { e.target.src = '/placeholder-cover.png'; }}
+      />
+      <div className="episode-content">
+        <span className="podcast-name">{podcastName}</span>
+        <h3 className="episode-title">{episode.title}</h3>
+        <p className="episode-summary">{episode.summary}</p>
+        <div className="episode-meta">
+          <span className="published-date">
+            {episode.publishedAt ? new Date(episode.publishedAt).toLocaleDateString() : ''}
+          </span>
+          <span className="comment-count">💬 {commentCount} comments</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+```
+
+---
+
+### Task 2 & Task 3 — Episode List with Search & Pagination Controls
+
+**File:** `client/src/components/EpisodeList.jsx`
+
+```jsx
+import React, { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { fetchEpisodes } from '../services/episodes.service';
+import EpisodeItem from './EpisodeItem';
+
+export default function EpisodeList() {
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+
+  // Reset page to 1 whenever user updates search query
+  const handleSearchChange = (e) => {
+    setSearch(e.target.value);
+    setPage(1);
+  };
+
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ['episodes', search, page],
+    queryFn: () => fetchEpisodes({ search, page }),
+    keepPreviousData: true,
+  });
+
+  if (isLoading) return <div className="loading">Loading episodes...</div>;
+  if (isError) return <div className="error">Error loading episodes: {error.message}</div>;
+
+  const { episodes = [], total = 0, hasMore = false } = data || {};
+
+  return (
+    <div className="episode-list-container">
+      {/* Search Bar */}
+      <div className="search-bar">
+        <input
+          type="text"
+          placeholder="Search episodes by title..."
+          value={search}
+          onChange={handleSearchChange}
+        />
+      </div>
+
+      {/* Episode Grid */}
+      <div className="episodes-grid">
+        {episodes.length > 0 ? (
+          episodes.map((episode) => (
+            <EpisodeItem key={episode.id} episode={episode} />
+          ))
+        ) : (
+          <p className="no-results">No episodes found matching your search.</p>
+        )}
+      </div>
+
+      {/* Pagination Controls */}
+      <div className="pagination">
+        <button
+          onClick={() => setPage((prev) => Math.max(prev - 1, 1))}
+          disabled={page === 1}
+        >
+          Previous
+        </button>
+        <span className="page-indicator">
+          Page {page} {total > 0 ? `of ${Math.ceil(total / 8)}` : ''}
+        </span>
+        <button
+          onClick={() => setPage((prev) => prev + 1)}
+          disabled={!hasMore}
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  );
+}
+
+```
+
+---
+
+### Task 4 — Architecture Map
+
+**File:** `ARCHITECTURE.md`
+
+```markdown
+# Podly Architecture Map
+
+## Core Layers & Responsibilities
+
+1. **Presentation Layer (`client/src/components/EpisodeList.jsx` & `EpisodeItem.jsx`)**
+   - **Responsibility:** Manages client UI state (`search`, `page`), captures user interactions, and renders episode components with appropriate fallback UI for optional relations.
+
+2. **Client Service Layer (`client/src/services/episodes.service.js`)**
+   - **Responsibility:** Encapsulates API HTTP calls using Axios, converting client parameters into query strings and returning parsed response data to TanStack Query.
+
+3. **API / Controller Routing Layer (`server/routes/episodes.js`)**
+   - **Responsibility:** Handles incoming HTTP GET requests, validates `search` and `page` query parameters, calculates pagination offsets (`skip`/`take`), invokes database queries, and formats the response JSON structure (`{ episodes, total, hasMore }`).
+
+4. **Data Persistence Layer (`server/prisma/schema.prisma` & Prisma Client)**
+   - **Responsibility:** Translates application query logic into PostgreSQL SQL, executing `ILIKE` searches, limit/offset queries, total row counts, and relational joins (`include`).
+
+---
+
+## Placement of Module Additions
+
+- **Nested Include (Podcast + Comment Count):**
+  - *Data & Routing Layer:* `server/routes/episodes.js` builds Prisma `include: { podcast: { select: { name: true, coverUrl: true } }, _count: { select: { comments: true } } }`.
+  - *Presentation Layer:* `EpisodeItem.jsx` reads `episode.podcast?.name`, `episode.podcast?.coverUrl`, and `episode._count?.comments` with fallbacks.
+
+- **Title Search Filter:**
+  - *Presentation Layer:* `EpisodeList.jsx` holds `search` state and triggers refetching when typing.
+  - *Service Layer:* `episodes.service.js` passes `search` in Axios GET parameters.
+  - *Routing & Data Layer:* Express handles `req.query.search`, and Prisma executes `where: { title: { contains: search, mode: "insensitive" } }`.
+
+- **Offset Pagination:**
+  - *Presentation Layer:* `EpisodeList.jsx` maintains `page` state and controls Previous/Next button `disabled` states.
+  - *Service Layer:* `episodes.service.js` sends `page` query parameter.
+  - *Routing & Data Layer:* Express calculates `skip = (page - 1) * 8` and `take = 8`, counts total records using `prisma.episode.count()`, evaluates `hasMore`, and sends total metadata.
+
+---
+
+## Technical Questions
+
+1. **First layer to check on a 500 error:**
+   - **Answer:** **API / Controller Routing Layer (`server/routes/episodes.js` / Express server logs)**. A 500 status code indicates an unhandled server-side runtime exception or database query error occurring during backend execution.
+
+2. **Layer where cursor-based pagination would live:**
+   - **Answer:** **API / Controller Routing Layer & Data Persistence Layer**. The API router extracts the `cursor` parameter from `req.query`, and passes `{ take, skip: 1, cursor: { id: cursorId } }` down to the Prisma Client in the persistence layer.
+
+---
+
+## Extension Seam
+
+- **Audio Player & Streaming Seam:**
+  - **Description:** Adding audio playback controls directly to episode items.
+  - **Integration:** Add an `audioUrl` string field to the `Episode` model in `schema.prisma`. Update `EpisodeItem.jsx` to render an HTML5 `<audio>` player or custom media bar using `episode.audioUrl`.
+
+```
+
+---
+
+### Submission Packaging Commands
+
+Run the following terminal commands from the root directory before submitting:
+
+```bash
+# 1. Clean build artifacts and dependencies to keep zip size < 2 MB
+rm -rf node_modules client/node_modules server/node_modules client/dist .git
+rm -f server/.env
+
+# 2. Verify server/.env.example and server/prisma/schema.prisma are present
+ls -a server/
+
+# 3. Create submission zip archive
+zip -r podly-yourname.zip . -x "*.git*" "*node_modules*" "*dist*" "server/.env"
+
+```
